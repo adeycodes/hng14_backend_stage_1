@@ -1,12 +1,4 @@
 {
-  "functions": {
-    "api/profiles.go": {
-      "runtime": "vercel-go@3.0.3"
-    },
-    "api/profiles/[id].go": {
-      "runtime": "vercel-go@3.0.3"
-    }
-  },
   "rewrites": [
     {
       "source": "/api/profiles/:id",
