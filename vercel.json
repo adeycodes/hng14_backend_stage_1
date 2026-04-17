@@ -1,10 +1,20 @@
 {
-  "headers": [
+  "functions": {
+    "api/profiles.go": {
+      "runtime": "vercel-go@3.0.3"
+    },
+    "api/profiles/[id].go": {
+      "runtime": "vercel-go@3.0.3"
+    }
+  },
+  "rewrites": [
     {
-      "source": "/api/(.*)",
-      "headers": [
-        { "key": "Access-Control-Allow-Origin", "value": "*" }
-      ]
+      "source": "/api/profiles/:id",
+      "destination": "/api/profiles/[id]"
+    },
+    {
+      "source": "/api/profiles",
+      "destination": "/api/profiles"
     }
   ]
 }

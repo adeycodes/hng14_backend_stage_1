@@ -1,1 +1,6 @@
 .env
+.vercel
+.env
+.env.local
+*.exe
+.DS_Store

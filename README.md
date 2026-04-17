@@ -1,66 +1,83 @@
-# Stage 1 Backend — Go + Supabase + Vercel
+# HNG Stage 1 — Profile Intelligence Service (Vercel + Go)
 
-This repository implements the Stage 1 backend task using Go serverless functions on Vercel and Supabase (PostgreSQL) for persistence.
+Accepts a name, enriches it via Genderize, Agify, and Nationalize APIs concurrently, stores the result in PostgreSQL, and exposes 4 REST endpoints.
 
-## Files
+## Project Structure
 
-- `api/profiles/index.go` — `POST /api/profiles` and `GET /api/profiles`
-- `api/profiles/[id].go` — `GET /api/profiles/{id}` and `DELETE /api/profiles/{id}`
-- `create_table.sql` — SQL to create the `profiles` table in Supabase
-- `vercel.json` — CORS response header configuration
-
-## Setup
-
-1. Create a Supabase project.
-2. In Supabase SQL editor, run `create_table.sql`:
-
-```sql
-CREATE TABLE profiles (
-    id UUID PRIMARY KEY,
-    name TEXT UNIQUE,
-    gender TEXT,
-    gender_probability REAL,
-    sample_size INTEGER,
-    age INTEGER,
-    age_group TEXT,
-    country_id TEXT,
-    country_probability REAL,
-    created_at TIMESTAMP
-);
 ```
-
-3. In Vercel project settings, add environment variable:
-
-- `DATABASE_URL` = `postgresql://postgres.gcxgbwtuzpqdpvssztqb:<YOUR-PASSWORD>@aws-0-eu-west-1.pooler.supabase.com:6543/postgres`
-
-Replace `<YOUR-PASSWORD>` with your actual Supabase database password.
-
-4. Install dependencies locally:
-
-```bash
-go mod tidy
-```
-
-5. Deploy to Vercel:
-
-```bash
-vercel
+├── api/
+│   ├── profiles.go          → POST /api/profiles, GET /api/profiles
+│   └── profiles/
+│       └── [id].go          → GET /api/profiles/{id}, DELETE /api/profiles/{id}
+├── internal/
+│   └── shared/
+│       └── shared.go        → DB, models, helpers (shared by both handlers)
+├── go.mod
+├── vercel.json
+└── README.md
 ```
 
 ## Endpoints
 
-- `POST /api/profiles`
-- `GET /api/profiles`
-- `GET /api/profiles/{id}`
-- `DELETE /api/profiles/{id}`
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/profiles` | Create profile (idempotent) |
+| `GET` | `/api/profiles` | List profiles (filterable) |
+| `GET` | `/api/profiles/{id}` | Get single profile |
+| `DELETE` | `/api/profiles/{id}` | Delete profile |
 
-## Notes
+## Filters (GET /api/profiles)
 
-- CORS is enabled via `vercel.json` and handler headers.
-- The API returns exact JSON error shapes required by the task.
-- Duplicates are handled by name uniqueness in Supabase.
-- `name` is stored lowercase for idempotency.
+All filters are optional and case-insensitive:
+- `?gender=male`
+- `?country_id=NG`
+- `?age_group=adult`
+- Combine: `?gender=male&country_id=NG`
 
-## Important
+## Environment Variables
 
-Do not commit `.env` or secret credentials.
+| Variable | Description |
+|----------|-------------|
+| `DATABASE_URL` | PostgreSQL connection string (from Supabase) |
+
+## Deploy
+
+### 1. Set up Supabase (free Postgres)
+- Go to https://supabase.com → New Project
+- Copy the **Connection String** from Settings → Database → Connection string (URI mode)
+- It looks like: `postgres://postgres:[password]@db.[ref].supabase.co:5432/postgres`
+
+### 2. Deploy to Vercel
+```bash
+npm i -g vercel
+vercel login
+vercel --prod
+```
+When prompted, add `DATABASE_URL` as an environment variable.
+
+Or via Vercel dashboard:
+- Import your GitHub repo
+- Add `DATABASE_URL` in Environment Variables
+- Deploy
+
+### 3. Test
+```bash
+curl -X POST https://your-app.vercel.app/api/profiles \
+  -H "Content-Type: application/json" \
+  -d '{"name": "james"}'
+```
+
+## Running Locally
+
+```bash
+export DATABASE_URL="postgres://postgres:postgres@localhost:5432/hng_stage1?sslmode=disable"
+vercel dev
+```
+
+## Tech Stack
+
+- **Go 1.22** — serverless functions (standard library HTTP)
+- **Vercel** — serverless deployment
+- **PostgreSQL** (Supabase) — data persistence
+- **lib/pq** — Postgres driver
+- **google/uuid** — UUID v7 generation

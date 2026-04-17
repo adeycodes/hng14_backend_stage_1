@@ -1,85 +1,95 @@
-package main
+// Vercel serverless function — handles:
+//   GET    /api/profiles/{id}   → get single profile
+//   DELETE /api/profiles/{id}   → delete profile
+//
+// Vercel routes /api/profiles/:id to this file because of the [id] filename.
+
+package handler
 
 import (
 	"database/sql"
-	"encoding/json"
 	"net/http"
-	"os"
-	"strings"
 
-	_ "github.com/lib/pq"
+	"github.com/adeycodes/hng14_backend_stage_1/internal/shared"
 )
 
-type Profile struct {
-	ID                 string  `json:"id"`
-	Name               string  `json:"name"`
-	Gender             string  `json:"gender"`
-	GenderProbability  float64 `json:"gender_probability"`
-	SampleSize         int     `json:"sample_size"`
-	Age                int     `json:"age"`
-	AgeGroup           string  `json:"age_group"`
-	CountryID          string  `json:"country_id"`
-	CountryProbability float64 `json:"country_probability"`
-	CreatedAt          string  `json:"created_at"`
+// Handler is the Vercel entrypoint — must be named exactly "Handler"
+func Handler(w http.ResponseWriter, r *http.Request) {
+	shared.WithCORS(route)(w, r)
 }
 
-func Handler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+func route(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		getProfile(w, r)
+	case http.MethodDelete:
+		deleteProfile(w, r)
+	default:
+		shared.ErrJSON(w, http.StatusMethodNotAllowed, "Method not allowed")
+	}
+}
 
-	// Get id from path, assuming /api/profiles/{id}
-	path := r.URL.Path
-	parts := strings.Split(strings.Trim(path, "/"), "/")
-	if len(parts) < 3 || parts[2] == "" {
-		http.Error(w, `{"status":"error","message":"Invalid path"}`, 400)
+// ─── GET /api/profiles/{id} ───────────────────────────────────────────────────
+
+func getProfile(w http.ResponseWriter, r *http.Request) {
+	// Vercel injects dynamic path params as query params
+	// e.g. /api/profiles/abc123 → r.URL.Query().Get("id") = "abc123"
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		shared.ErrJSON(w, http.StatusBadRequest, "Missing profile ID")
 		return
 	}
-	id := parts[2]
 
-	databaseURL := os.Getenv("DATABASE_URL")
-	if databaseURL == "" {
-		http.Error(w, `{"status":"error","message":"Database not configured"}`, 500)
+	db := shared.DB()
+
+	var profile shared.Profile
+	err := db.QueryRow(`
+		SELECT id, name, gender, gender_probability, sample_size,
+		       age, age_group, country_id, country_probability, created_at
+		FROM profiles WHERE id = $1
+	`, id).Scan(
+		&profile.ID, &profile.Name, &profile.Gender, &profile.GenderProbability,
+		&profile.SampleSize, &profile.Age, &profile.AgeGroup,
+		&profile.CountryID, &profile.CountryProbability, &profile.CreatedAt,
+	)
+	if err == sql.ErrNoRows {
+		shared.ErrJSON(w, http.StatusNotFound, "Profile not found")
 		return
 	}
-
-	db, err := sql.Open("postgres", databaseURL)
 	if err != nil {
-		http.Error(w, `{"status":"error","message":"Database connection failed"}`, 500)
+		shared.ErrJSON(w, http.StatusInternalServerError, "Database error")
 		return
 	}
-	defer db.Close()
 
-	if r.Method == "GET" {
-		var profile Profile
-		err := db.QueryRow("SELECT id, name, gender, gender_probability, sample_size, age, age_group, country_id, country_probability, created_at FROM profiles WHERE id = $1", id).Scan(&profile.ID, &profile.Name, &profile.Gender, &profile.GenderProbability, &profile.SampleSize, &profile.Age, &profile.AgeGroup, &profile.CountryID, &profile.CountryProbability, &profile.CreatedAt)
-		if err != nil {
-			http.Error(w, `{"status":"error","message":"Profile not found"}`, 404)
-			return
-		}
-		response := map[string]interface{}{
-			"status": "success",
-			"data":   profile,
-		}
-		json.NewEncoder(w).Encode(response)
+	shared.WriteJSON(w, http.StatusOK, map[string]any{
+		"status": "success",
+		"data":   profile,
+	})
+}
 
-	} else if r.Method == "DELETE" {
-		result, err := db.Exec("DELETE FROM profiles WHERE id = $1", id)
-		if err != nil {
-			http.Error(w, `{"status":"error","message":"Failed to delete"}`, 500)
-			return
-		}
-		rowsAffected, err := result.RowsAffected()
-		if err != nil {
-			http.Error(w, `{"status":"error","message":"Failed to delete"}`, 500)
-			return
-		}
-		if rowsAffected == 0 {
-			http.Error(w, `{"status":"error","message":"Profile not found"}`, 404)
-			return
-		}
-		w.WriteHeader(204)
+// ─── DELETE /api/profiles/{id} ────────────────────────────────────────────────
 
-	} else {
-		http.Error(w, `{"status":"error","message":"Method not allowed"}`, 405)
+func deleteProfile(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		shared.ErrJSON(w, http.StatusBadRequest, "Missing profile ID")
+		return
 	}
+
+	db := shared.DB()
+
+	result, err := db.Exec(`DELETE FROM profiles WHERE id = $1`, id)
+	if err != nil {
+		shared.ErrJSON(w, http.StatusInternalServerError, "Database error")
+		return
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		shared.ErrJSON(w, http.StatusNotFound, "Profile not found")
+		return
+	}
+
+	// 204 No Content — no body required
+	w.WriteHeader(http.StatusNoContent)
 }
