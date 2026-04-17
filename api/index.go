@@ -26,25 +26,29 @@ import (
 
 var (
 	db     *sql.DB
+	dbErr  error
 	dbOnce sync.Once
 )
 
-func getDB() *sql.DB {
+func getDB() (*sql.DB, error) {
 	dbOnce.Do(func() {
 		dsn := os.Getenv("DATABASE_URL")
 		if dsn == "" {
-			dsn = "host=localhost user=postgres password=postgres dbname=hng_stage1 sslmode=disable"
+			dbErr = fmt.Errorf("DATABASE_URL is not set")
+			return
 		}
 		var err error
 		db, err = sql.Open("postgres", dsn)
 		if err != nil {
-			panic(fmt.Sprintf("DB open: %v", err))
+			dbErr = fmt.Errorf("DB open: %v", err)
+			return
 		}
 		db.SetMaxOpenConns(5)
 		db.SetMaxIdleConns(2)
 		db.SetConnMaxLifetime(5 * time.Minute)
 		if err = db.Ping(); err != nil {
-			panic(fmt.Sprintf("DB ping: %v", err))
+			dbErr = fmt.Errorf("DB ping: %v", err)
+			return
 		}
 		_, err = db.Exec(`
 			CREATE TABLE IF NOT EXISTS profiles (
@@ -61,10 +65,10 @@ func getDB() *sql.DB {
 			)
 		`)
 		if err != nil {
-			panic(fmt.Sprintf("Create table: %v", err))
+			dbErr = fmt.Errorf("create table: %v", err)
 		}
 	})
-	return db
+	return db, dbErr
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -268,14 +272,18 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 }
 
 func router(w http.ResponseWriter, r *http.Request) {
-	path := r.URL.Path
+	// Vercel preserves the original request path even after rewriting.
+	// We check both r.URL.Path and the id query param Vercel injects
+	// for dynamic segments like /api/profiles/:id
+	path := strings.TrimRight(r.URL.Path, "/")
 
-	// Strip trailing slash for consistency
-	path = strings.TrimRight(path, "/")
+	// When Vercel rewrites /api/profiles/:id → /api/index,
+	// it injects the :id segment as query param "id"
+	idFromQuery := r.URL.Query().Get("id")
 
 	switch {
 	// /api/profiles — list or create
-	case path == "/api/profiles":
+	case path == "/api/profiles" || path == "/api/index" && idFromQuery == "":
 		switch r.Method {
 		case http.MethodPost:
 			handleCreate(w, r)
@@ -285,7 +293,18 @@ func router(w http.ResponseWriter, r *http.Request) {
 			errJSON(w, http.StatusMethodNotAllowed, "Method not allowed")
 		}
 
-	// /api/profiles/{id} — get or delete
+	// /api/profiles/{id} — Vercel injects id as query param
+	case idFromQuery != "":
+		switch r.Method {
+		case http.MethodGet:
+			handleGetByID(w, r, idFromQuery)
+		case http.MethodDelete:
+			handleDelete(w, r, idFromQuery)
+		default:
+			errJSON(w, http.StatusMethodNotAllowed, "Method not allowed")
+		}
+
+	// /api/profiles/{id} — path-based fallback
 	case strings.HasPrefix(path, "/api/profiles/"):
 		id := strings.TrimPrefix(path, "/api/profiles/")
 		switch r.Method {
@@ -326,11 +345,15 @@ func handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	db := getDB()
+	db, err := getDB()
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, "Database unavailable: "+err.Error())
+		return
+	}
 
 	// Idempotency — return existing record if name already stored
 	var existing Profile
-	err := db.QueryRow(`
+	err = db.QueryRow(`
 		SELECT id, name, gender, gender_probability, sample_size,
 		       age, age_group, country_id, country_probability, created_at
 		FROM profiles WHERE LOWER(name) = LOWER($1)
@@ -423,7 +446,11 @@ func handleCreate(w http.ResponseWriter, r *http.Request) {
 
 // GET /api/profiles
 func handleList(w http.ResponseWriter, r *http.Request) {
-	db := getDB()
+	db, err := getDB()
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, "Database unavailable: "+err.Error())
+		return
+	}
 
 	query := `SELECT id, name, gender, age, age_group, country_id FROM profiles WHERE 1=1`
 	args := []any{}
@@ -478,10 +505,14 @@ func handleGetByID(w http.ResponseWriter, r *http.Request, id string) {
 		return
 	}
 
-	db := getDB()
+	db, err := getDB()
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, "Database unavailable: "+err.Error())
+		return
+	}
 
 	var p Profile
-	err := db.QueryRow(`
+	err = db.QueryRow(`
 		SELECT id, name, gender, gender_probability, sample_size,
 		       age, age_group, country_id, country_probability, created_at
 		FROM profiles WHERE id = $1
@@ -512,7 +543,11 @@ func handleDelete(w http.ResponseWriter, r *http.Request, id string) {
 		return
 	}
 
-	db := getDB()
+	db, err := getDB()
+	if err != nil {
+		errJSON(w, http.StatusInternalServerError, "Database unavailable: "+err.Error())
+		return
+	}
 
 	result, err := db.Exec(`DELETE FROM profiles WHERE id = $1`, id)
 	if err != nil {
